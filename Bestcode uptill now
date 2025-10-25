@@ -1,10 +1,11 @@
-#Best->426 (Updated version, Lasso model) ->Similar only if yiu use ridge
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LassoCV
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
 
 # ================== LOAD TRAIN DATA ==================
 train = pd.read_csv('/kaggle/input/Medical-Equipments-Cost-Prediction-Challenge/train.csv')
@@ -40,43 +41,61 @@ cat_imputer = SimpleImputer(strategy='most_frequent')
 X[numerical_cols] = num_imputer.fit_transform(X[numerical_cols])
 X[categorical_cols] = cat_imputer.fit_transform(X[categorical_cols])
 
-# ================== OUTLIER REMOVAL (IQR) ==================
-Q1 = y.quantile(0.10)
-Q3 = y.quantile(0.90)
+# ================== OUTLIER REMOVAL (NO SCALER) ==================
+# Use IQR directly on raw values
+Q1 = X[numerical_cols].quantile(0.25)
+Q3 = X[numerical_cols].quantile(0.75)
 IQR = Q3 - Q1
-lower_bound = Q1 - 50 * IQR
-upper_bound = Q3 + 125 * IQR
-mask = (y >= lower_bound) & (y <= upper_bound)
+lower_bounds = Q1 - 3 * IQR
+upper_bounds = Q3 + 3 * IQR
+
+mask_no_outliers = ~((X[numerical_cols] < lower_bounds) | (X[numerical_cols] > upper_bounds)).any(axis=1)
+
+# Filter y outliers using wide IQR method
+Q1_y, Q3_y = y.quantile(0.10), y.quantile(0.90)
+IQR_y = Q3_y - Q1_y
+lower_y = Q1_y - 50 * IQR_y
+upper_y = Q3_y + 125 * IQR_y
+mask_y = (y >= lower_y) & (y <= upper_y)
+
+# Combine both masks
+mask = mask_no_outliers & mask_y
 X = X[mask]
 y = y[mask]
 
-print(f"After IQR filter: {len(y)} rows kept")
+print(f"After outlier removal (no scaling): {len(y)} rows kept")
 
-# ================== ONE-HOT ENCODING ==================
-X = pd.get_dummies(X, columns=categorical_cols, drop_first=True)
+# ================== LABEL ENCODING ==================
+label_encoders = {}
+for col in categorical_cols:
+    le = LabelEncoder()
+    X[col] = le.fit_transform(X[col].astype(str))
+    label_encoders[col] = le
 
-# ================== LASSO REGRESSION MODEL ==================
-lasso_model = LassoCV(
-    alphas=np.logspace(-4, 1, 50),  # search range for alpha
-    cv=5,
-    max_iter=5000,
-    random_state=42,
-    n_jobs=-1
-)
+# ================== LASSO REGRESSION WITH STANDARD SCALER ==================
+lasso_pipeline = Pipeline([
+    ('scaler', StandardScaler()),
+    ('lasso', LassoCV(
+        alphas=np.logspace(-4, 3, 100),
+        cv=5,
+        max_iter=10000,
+        random_state=42
+    ))
+])
 
 # ================== K-FOLD VALIDATION ==================
 kf = KFold(n_splits=2, shuffle=True, random_state=42)
 rmse_list, r2_list, adj_r2_list = [], [], []
 
 n = len(X)
-p = X.shape[1]  # number of predictors
+p = X.shape[1]
 
 for fold, (train_idx, val_idx) in enumerate(kf.split(X), 1):
     X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
     y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
 
-    lasso_model.fit(X_train, y_train)
-    y_val_pred = lasso_model.predict(X_val)
+    lasso_pipeline.fit(X_train, y_train)
+    y_val_pred = lasso_pipeline.predict(X_val)
 
     rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
     r2 = r2_score(y_val, y_val_pred)
@@ -94,10 +113,12 @@ print(f"\nAverage RMSE: {np.mean(rmse_list):.3f}")
 print(f"Average R²: {np.mean(r2_list):.3f}")
 print(f"Average Adjusted R²: {np.mean(adj_r2_list):.3f}")
 
-print(f"\nBest alpha selected by LassoCV: {lasso_model.alpha_:.6f}")
+# Best alpha from LassoCV
+best_alpha = lasso_pipeline.named_steps['lasso'].alpha_
+print(f"\nBest alpha selected by LassoCV: {best_alpha:.6f}")
 
 # ================== FINAL TRAIN ON FULL DATA ==================
-lasso_model.fit(X, y)
+lasso_pipeline.fit(X, y)
 
 # ================== LOAD TEST SET ==================
 test = pd.read_csv('/kaggle/input/Medical-Equipments-Cost-Prediction-Challenge/test.csv')
@@ -107,22 +128,27 @@ test['Order_Placed_Date'] = pd.to_datetime(test['Order_Placed_Date'], format='%m
 test['Delivery_Date'] = pd.to_datetime(test['Delivery_Date'], format='%m/%d/%y', errors='coerce')
 test['Days_Between_Order_Delivery'] = (test['Delivery_Date'] - test['Order_Placed_Date']).dt.days
 
-# Replace negative or missing Days_Between_Order_Delivery with train median
 test.loc[test['Days_Between_Order_Delivery'] < 0, 'Days_Between_Order_Delivery'] = median_days
 test['Days_Between_Order_Delivery'] = test['Days_Between_Order_Delivery'].fillna(median_days).astype(int)
 
 test = test.drop(columns=drop_cols, errors='ignore')
 
-# Same imputers used
 test[numerical_cols] = num_imputer.transform(test[numerical_cols])
 test[categorical_cols] = cat_imputer.transform(test[categorical_cols])
 
-# One-hot encoding
-test = pd.get_dummies(test, columns=categorical_cols, drop_first=True)
+# Apply label encoders from training
+for col in categorical_cols:
+    le = label_encoders[col]
+    test[col] = test[col].map(lambda s: s if s in le.classes_ else 'unknown')
+    le_classes = np.append(le.classes_, 'unknown')
+    le.classes_ = le_classes
+    test[col] = le.transform(test[col].astype(str))
+
+# Ensure test has same columns as train
 test = test.reindex(columns=X.columns, fill_value=0)
 
 # ================== PREDICTION ==================
-y_pred_test = lasso_model.predict(test)
+y_pred_test = lasso_pipeline.predict(test)
 pred_df = pd.DataFrame({
     'Hospital_Id': hospital_ids,
     'Transport_Cost': y_pred_test
@@ -131,4 +157,5 @@ pred_df = pd.DataFrame({
 print("\n===== Sample Predictions =====")
 print(pred_df.head())
 pred_df.to_csv('submission.csv', index=False)
-print(f"\nSubmission file created with {len(pred_df)} predictions.")
+print(f"\nSubmission file created with {len(pred_df)} predictions.")
+
