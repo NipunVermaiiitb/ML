@@ -143,7 +143,7 @@ else:
         reg_lambda=2,
     )
     param_grid = {
-        "lasso__n_estimators": [200, 400, 600],
+        "lasso__n_estimators": [200, 400,500],
         "lasso__learning_rate": [0.01, 0.05, 0.1],
         "lasso__max_depth": [3, 5, 7, 9],
         "lasso__subsample": [0.6, 0.8, 1.0],
