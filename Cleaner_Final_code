@@ -91,7 +91,7 @@ print("Target encoding applied to training data.")
 model_pipeline = Pipeline([
     ('model', RidgeCV(
         alphas=np.logspace(-5, 4, 100),
-        cv=5
+        cv=10
     ))
 ])
 
