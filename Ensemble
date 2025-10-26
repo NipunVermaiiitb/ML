@@ -137,7 +137,10 @@ else:
         tree_method="hist",
         eval_metric="rmse",
         booster="gblinear",
-        verbosity=0
+        verbosity=0,
+        learning_rate=0.05,   # default is 0.3 — smaller often generalizes better
+        reg_alpha=0.5,       # L1 penalty
+        reg_lambda=2,
     )
     param_grid = {
         "lasso__n_estimators": [200, 400, 600],
@@ -156,7 +159,7 @@ lasso_pipeline = Pipeline([
 search = RandomizedSearchCV(
     estimator=lasso_pipeline,
     param_distributions=param_grid,
-    n_iter=15,               # reduce if slow
+    n_iter=20,               # reduce if slow
     cv=3,
     scoring="r2",
     random_state=42,
